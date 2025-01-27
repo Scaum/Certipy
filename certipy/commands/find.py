@@ -96,6 +96,7 @@ class Find:
         scheme: str = "ldaps",
         connection: LDAPConnection = None,
         debug=False,
+        all_vulns: bool = False,
         **kwargs
     ):
         self.target = target
@@ -111,6 +112,7 @@ class Find:
         self.dc_only = dc_only
         self.scheme = scheme
         self.verbose = debug
+        self.all_vulns = all_vulns
         self.kwargs = kwargs
 
         self._connection = connection
@@ -928,7 +930,10 @@ class Find:
 
         vulnerabilities = {}
 
-        user_can_enroll, enrollable_sids = self.can_user_enroll_in_template(template)
+        if (self.all_vulns):
+            user_can_enroll, enrollable_sids = self.can_non_priv_enroll_in_template(template)
+        else:
+            user_can_enroll, enrollable_sids = self.can_user_enroll_in_template(template)
 
         if (
             not template.get("requires_manager_approval")
@@ -971,32 +976,52 @@ class Find:
         security = CertifcateSecurity(template.get("nTSecurityDescriptor"))
         owner_sid = security.owner
 
-        if owner_sid in self.connection.get_user_sids(self.target.username):
-            vulnerabilities[
-                "ESC4"
-            ] = "Template is owned by %s" % self.connection.lookup_sid(owner_sid).get(
-                "name"
-            )
+        if(self.all_vulns):
+            if owner_sid not in self.connection.get_priv_sids():
+                vulnerabilities[                                                                                                                                                                                                            
+                    "ESC4"                                                                                                                                                                                                                  
+                ] = "Template is owned by %s" % self.connection.lookup_sid(owner_sid).get(                                                                                                                                                  
+                    "name"                                                                                                                                                                                                                  
+                )                                                                                                                                                                                                                           
+            else:                                                                                                                                                                                                                           
+                # No reason to show if user is already owner                                                                                                                                                                                
+                has_vulnerable_acl, vulnerable_acl_sids = self.template_has_vulnerable_acl(                                                                                                                                                 
+                    template,
+                    False                                                                                                                                                                                                                
+                )                                                                                                                                                                                                                           
+                if has_vulnerable_acl:                                                                                                                                                                                                      
+                    vulnerabilities["ESC4"] = "%s has dangerous permissions" % list_sids(                                                                                                                                                   
+                        vulnerable_acl_sids                                                                                                                                                                                                 
+                    )
+            
         else:
-            # No reason to show if user is already owner
-            has_vulnerable_acl, vulnerable_acl_sids = self.template_has_vulnerable_acl(
-                template
-            )
-            if has_vulnerable_acl:
-                vulnerabilities["ESC4"] = "%s has dangerous permissions" % list_sids(
-                    vulnerable_acl_sids
+            if owner_sid in self.connection.get_user_sids(self.target.username):
+                vulnerabilities[
+                    "ESC4"
+                ] = "Template is owned by %s" % self.connection.lookup_sid(owner_sid).get(
+                    "name"
                 )
+            else:
+                # No reason to show if user is already owner
+                has_vulnerable_acl, vulnerable_acl_sids = self.template_has_vulnerable_acl(
+                    template,
+                    True
+                )
+                if has_vulnerable_acl:
+                    vulnerabilities["ESC4"] = "%s has dangerous permissions" % list_sids(
+                        vulnerable_acl_sids
+                    )
 
         return vulnerabilities
 
-    def template_has_vulnerable_acl(self, template: LDAPEntry):
+    def template_has_vulnerable_acl(self, template: LDAPEntry, user: bool = True):
         has_vulnerable_acl = False
 
         security = CertifcateSecurity(template.get("nTSecurityDescriptor"))
         aces = security.aces
         vulnerable_acl_sids = []
         for sid, rights in aces.items():
-            if sid not in self.connection.get_user_sids(self.target.username):
+            if (user and sid not in self.connection.get_user_sids(self.target.username)) or (not user and sid in self.connection.get_priv_sids()):
                 continue
 
             ad_rights = rights["rights"]
@@ -1033,6 +1058,27 @@ class Find:
                 enrollable_sids.append(sid)
                 user_can_enroll = True
 
+        return user_can_enroll, enrollable_sids
+
+    def can_non_priv_enroll_in_template(self, template: LDAPEntry):                                                                                                                                                                             
+        user_can_enroll = False                                                                                                                                                                                                             
+                                                                                                                                                                                                                                            
+        security = CertifcateSecurity(template.get("nTSecurityDescriptor"))                                                                                                                                                                 
+        aces = security.aces                                                                                                                                                                                                                
+        enrollable_sids = []                                                                                                                                                                                                                
+        for sid, rights in aces.items():                                                                                                                                                                                                    
+            if sid in self.connection.get_priv_sids():                                                                                                                                                              
+                continue                                                                                                                                                                                                                    
+                                                                                                                                                                                                                                            
+            if (                                                                                                                                                                                                                            
+                EXTENDED_RIGHTS_NAME_MAP["All-Extended-Rights"]                                                                                                                                                                             
+                in rights["extended_rights"]                                                                                                                                                                                                
+                or EXTENDED_RIGHTS_NAME_MAP["Enroll"] in rights["extended_rights"]                                                                                                                                                          
+                or CERTIFICATE_RIGHTS.GENERIC_ALL in rights["rights"]                                                                                                                                                                       
+            ):                                                                                                                                                                                                                              
+                enrollable_sids.append(sid)                                                                                                                                                                                                 
+                user_can_enroll = True                                                                                                                                                                                                      
+                                                                                                                                                                                                                                            
         return user_can_enroll, enrollable_sids
 
     def get_ca_properties(self, ca: LDAPEntry, ca_properties: dict = None) -> dict:

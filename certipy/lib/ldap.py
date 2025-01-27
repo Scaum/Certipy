@@ -9,6 +9,15 @@ from certipy.lib.target import Target
 from ldap3.core.results import RESULT_STRONGER_AUTH_REQUIRED
 from ldap3.protocol.microsoft import security_descriptor_control
 
+PRIV_SIDS = [
+    "500",
+    "502",
+    "512",
+    "516",
+    "519",
+    "544"
+]
+
 
 # https://github.com/fox-it/BloodHound.py/blob/d665959c58d881900378040e6670fa12f801ccd4/bloodhound/ad/utils.py#L216
 def get_account_type(entry: "LDAPEntry"):
@@ -404,6 +413,9 @@ class LDAPConnection:
         self._user_sids[sanitized_username] = sids
 
         return sids
+
+    def get_priv_sids(self):
+        return list(map(lambda s: "%s-%s" % (self.domain_sid, s), PRIV_SIDS))
 
     def lookup_sid(self, sid: str) -> LDAPEntry:
         if sid in self.sid_map:
